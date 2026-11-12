@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DogRoute.Server/DogRoute.Server.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/HelloDog/HelloDog.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DogRoute.Server.Tests/DogRoute.Server.Tests.csproj" />
+  </Folder>
+</Solution>
+
