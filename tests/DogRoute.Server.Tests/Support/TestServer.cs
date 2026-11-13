@@ -6,21 +6,24 @@ namespace DogRoute.Server.Tests.Support;
 internal sealed class TestServer : IAsyncDisposable
 {
     private readonly CancellationTokenSource _cts = new();
-    private readonly Task _run;
 
     public int Port { get; }
 
-    public TestServer(DogHandler handler)
+    public Task Completion { get; }
+
+    public TestServer(DogHandler handler, DogServerOptions? options = null)
     {
         Port = GetFreePort();
-        var server = new DogServer(new IPEndPoint(IPAddress.Loopback, Port), handler);
-        _run = server.RunAsync(_cts.Token);
+        var server = new DogServer(new IPEndPoint(IPAddress.Loopback, Port), handler, options);
+        Completion = server.RunAsync(_cts.Token);
     }
+
+    public void Stop() => _cts.Cancel();
 
     public async ValueTask DisposeAsync()
     {
         await _cts.CancelAsync();
-        await _run;
+        await Completion;
         _cts.Dispose();
     }
 
