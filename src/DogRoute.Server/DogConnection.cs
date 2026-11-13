@@ -5,8 +5,13 @@ using System.Runtime.CompilerServices;
 
 namespace DogRoute.Server;
 
-internal sealed class DogConnection(Socket socket, DogHandler handler)
+internal sealed class DogConnection(
+    Socket socket, DogHandler handler, DogServerOptions options, ConnectionManager manager)
 {
+    private const int StateIdle = 0;
+    private const int StateReading = 1;
+    private const int StateHandling = 2;
+
     private static readonly PipeOptions PipeOpts = new(
         pool: MemoryPool<byte>.Shared,
         readerScheduler: PipeScheduler.Inline,
@@ -16,7 +21,10 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
         minimumSegmentSize: 4096,
         useSynchronizationContext: false);
 
-    public async Task RunAsync(CancellationToken serverCt)
+    private long _deadline;
+    private int _state = StateIdle;
+
+    public async Task RunAsync()
     {
         await Task.Yield();
 
@@ -24,9 +32,6 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
         var request = new DogRequest();
         var response = new DogResponse();
         var output = new ByteBuffer(4096);
-
-        using CancellationTokenRegistration reg =
-            serverCt.UnsafeRegister(static s => ((Socket)s!).Dispose(), socket);
 
         Task filling = FillPipeAsync(pipe.Writer);
 
@@ -37,6 +42,7 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
         catch { /*  */ }
         finally
         {
+            manager.Remove(this);
             try { socket.Shutdown(SocketShutdown.Send); } catch { }
             socket.Dispose();
             try { await pipe.Reader.CompleteAsync(); } catch { }
@@ -46,6 +52,50 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
             response.Dispose();
             output.Dispose();
         }
+    }
+
+    internal void CheckTimeout(long now)
+    {
+        long deadline = Volatile.Read(ref _deadline);
+        if (deadline != 0 && now >= deadline && Volatile.Read(ref _state) != StateHandling)
+            Abort();
+    }
+
+    internal void CloseIfIdle()
+    {
+        if (Volatile.Read(ref _state) == StateIdle)
+            Abort();
+    }
+
+    internal void Abort()
+    {
+        try { socket.Dispose(); } catch { }
+    }
+
+    private void EnterIdle(TimeSpan timeout)
+    {
+        SetDeadline(timeout);
+        Volatile.Write(ref _state, StateIdle);
+    }
+
+    private void EnterReading()
+    {
+        SetDeadline(options.RequestTimeout);
+        Volatile.Write(ref _state, StateReading);
+    }
+
+    private void EnterHandling()
+    {
+        Volatile.Write(ref _state, StateHandling);
+        Volatile.Write(ref _deadline, 0);
+    }
+
+    private void SetDeadline(TimeSpan timeout)
+    {
+        long deadline = timeout == Timeout.InfiniteTimeSpan
+            ? 0
+            : Environment.TickCount64 + Math.Max(1, (long)timeout.TotalMilliseconds);
+        Volatile.Write(ref _deadline, deadline);
     }
 
     private async Task FillPipeAsync(PipeWriter writer)
@@ -72,6 +122,9 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
 
     private async Task ProcessAsync(PipeReader reader, DogRequest request, DogResponse response, ByteBuffer output)
     {
+        EnterIdle(options.RequestTimeout);
+        bool idle = true;
+
         while (true)
         {
             ReadResult result = await reader.ReadAsync();
@@ -79,6 +132,13 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
             SequencePosition consumed = buffer.Start;
             SequencePosition examined = buffer.End;
             bool close = false;
+            bool handled = false;
+
+            if (idle && !buffer.IsEmpty)
+            {
+                EnterReading();
+                idle = false;
+            }
 
             try
             {
@@ -87,6 +147,9 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
                     ParseStatus status = HttpParser.TryParse(buffer, request, out SequencePosition end);
 
                     if (status == ParseStatus.NeedMore) break;
+
+                    EnterHandling();
+                    handled = true;
 
                     if (status == ParseStatus.Bad)
                     {
@@ -112,7 +175,7 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
                         response.Write("Internal Server Error"u8);
                     }
 
-                    bool keepAlive = request.KeepAlive;
+                    bool keepAlive = request.KeepAlive && !manager.IsDraining;
                     HttpWriter.Write(output, response, keepAlive, isHead: request.Method == DogMethod.Head);
 
                     consumed = end;
@@ -137,6 +200,19 @@ internal sealed class DogConnection(Socket socket, DogHandler handler)
             }
 
             if (close || result.IsCompleted) return;
+
+            if (handled)
+            {
+                if (buffer.IsEmpty)
+                {
+                    EnterIdle(options.KeepAliveTimeout);
+                    idle = true;
+                }
+                else
+                {
+                    EnterReading();
+                }
+            }
         }
     }
 

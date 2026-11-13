@@ -23,6 +23,7 @@ internal static class HttpWriter
 
         o.Write("Server: DogRoute\r\n"u8);
         o.Write(DateHeader.Get());
+        o.Write(r.Headers.Raw);
 
         bool bodyAllowed = status >= 200 && status != 204 && status != 304;
         if (bodyAllowed)
@@ -53,7 +54,10 @@ internal static class HttpWriter
         204 => "HTTP/1.1 204 No Content\r\n"u8,
         301 => "HTTP/1.1 301 Moved Permanently\r\n"u8,
         302 => "HTTP/1.1 302 Found\r\n"u8,
+        303 => "HTTP/1.1 303 See Other\r\n"u8,
         304 => "HTTP/1.1 304 Not Modified\r\n"u8,
+        307 => "HTTP/1.1 307 Temporary Redirect\r\n"u8,
+        308 => "HTTP/1.1 308 Permanent Redirect\r\n"u8,
         400 => "HTTP/1.1 400 Bad Request\r\n"u8,
         401 => "HTTP/1.1 401 Unauthorized\r\n"u8,
         403 => "HTTP/1.1 403 Forbidden\r\n"u8,

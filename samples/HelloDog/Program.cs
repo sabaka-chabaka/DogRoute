@@ -4,7 +4,12 @@ using DogRoute.Server;
 int port = args.Length > 0 && int.TryParse(args[0], out int p) ? p : 8080;
 
 using var cts = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    Console.WriteLine("Stopping (waiting for active requests)...");
+    cts.Cancel();
+};
 
 var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req, res) =>
 {
@@ -19,6 +24,21 @@ var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req,
     {
         res.Write("pong"u8);
     }
+    else if (path.SequenceEqual("/redirect"u8))
+    {
+        res.Redirect("/"u8);
+    }
+    else if (path.SequenceEqual("/headers"u8))
+    {
+        res.Headers.Add("X-Dog"u8, "woof"u8);
+        res.Headers.Add("Set-Cookie", "a=1; Path=/");
+        res.Headers.Add("Set-Cookie", "b=2; Path=/");
+        res.Write("headers"u8);
+    }
+    else if (path.SequenceEqual("/slow"u8))
+    {
+        return SlowAsync(res);
+    }
     else
     {
         res.Write("Hello, World!"u8);
@@ -29,3 +49,10 @@ var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req,
 
 Console.WriteLine($"DogRoute listening on http://localhost:{port}  (Ctrl+C to stop)");
 await server.RunAsync(cts.Token);
+Console.WriteLine("Stopped.");
+
+static async ValueTask SlowAsync(DogResponse res)
+{
+    await Task.Delay(3000);
+    res.Write("slow done"u8);
+}

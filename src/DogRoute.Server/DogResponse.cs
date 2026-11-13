@@ -17,14 +17,30 @@ public sealed class DogResponse : IBufferWriter<byte>, IDisposable
 
     public int StatusCode { get; set; } = 200;
     public byte[] ContentType { get; set; } = ContentTypes.Text;
+    public DogHeaders Headers { get; } = new();
 
     internal ReadOnlySpan<byte> BodySpan => _body.WrittenSpan;
     internal int BodyLength => _body.Count;
+
+    public void Redirect(ReadOnlySpan<byte> location, int statusCode = 302)
+    {
+        CheckRedirectStatus(statusCode);
+        Headers.Add("Location"u8, location);
+        StatusCode = statusCode;
+    }
+
+    public void Redirect(string location, int statusCode = 302)
+    {
+        CheckRedirectStatus(statusCode);
+        Headers.Add("Location", location);
+        StatusCode = statusCode;
+    }
 
     internal void Reset()
     {
         StatusCode = 200;
         ContentType = ContentTypes.Text;
+        Headers.Clear();
         _body.Clear();
     }
 
@@ -40,5 +56,15 @@ public sealed class DogResponse : IBufferWriter<byte>, IDisposable
     public Memory<byte> GetMemory(int sizeHint = 0) => _body.GetMemory(sizeHint);
     public Span<byte> GetSpan(int sizeHint = 0) => _body.GetSpan(sizeHint);
 
-    public void Dispose() => _body.Dispose();
+    public void Dispose()
+    {
+        Headers.Release();
+        _body.Dispose();
+    }
+
+    private static void CheckRedirectStatus(int statusCode)
+    {
+        if (statusCode is < 300 or > 399)
+            throw new ArgumentOutOfRangeException(nameof(statusCode), statusCode, "Redirect status must be 3xx.");
+    }
 }
