@@ -6,6 +6,8 @@ public sealed class DogServerOptions
 
     public TimeSpan KeepAliveTimeout { get; init; } = TimeSpan.FromSeconds(120);
 
+    public TimeSpan SendTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     public TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     internal TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(1);
@@ -14,6 +16,7 @@ public sealed class DogServerOptions
     {
         RequirePositiveOrInfinite(RequestTimeout, nameof(RequestTimeout));
         RequirePositiveOrInfinite(KeepAliveTimeout, nameof(KeepAliveTimeout));
+        RequirePositiveOrInfinite(SendTimeout, nameof(SendTimeout));
 
         if (ShutdownTimeout != Timeout.InfiniteTimeSpan && ShutdownTimeout < TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(ShutdownTimeout), ShutdownTimeout, "Must not be negative.");

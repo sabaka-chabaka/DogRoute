@@ -12,9 +12,11 @@ internal sealed class RawClient : IDisposable
     private readonly TcpClient _tcp = new() { NoDelay = true };
     private NetworkStream _stream = null!;
 
-    public static async Task<RawClient> ConnectAsync(int port)
+    public static async Task<RawClient> ConnectAsync(int port, int receiveBufferSize = 0)
     {
         var client = new RawClient();
+        if (receiveBufferSize > 0) client._tcp.ReceiveBufferSize = receiveBufferSize;
+
         using var cts = new CancellationTokenSource(Timeout);
         await client._tcp.ConnectAsync("127.0.0.1", port, cts.Token);
         client._stream = client._tcp.GetStream();
@@ -71,6 +73,48 @@ internal sealed class RawClient : IDisposable
         {
             return true;
         }
+    }
+
+    public async Task<string> ReadUntilCloseAsync()
+    {
+        using var cts = new CancellationTokenSource(Timeout);
+        var all = new MemoryStream();
+        var buf = new byte[4096];
+
+        try
+        {
+            while (true)
+            {
+                int n = await _stream.ReadAsync(buf, cts.Token);
+                if (n == 0) break;
+                all.Write(buf, 0, n);
+            }
+        }
+        catch (IOException) { }
+
+        return Encoding.ASCII.GetString(all.ToArray());
+    }
+
+    public async Task<long> CountBytesUntilCloseAsync(TimeSpan delayBeforeReading)
+    {
+        await Task.Delay(delayBeforeReading);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var buf = new byte[64 * 1024];
+        long total = 0;
+
+        try
+        {
+            while (true)
+            {
+                int n = await _stream.ReadAsync(buf, cts.Token);
+                if (n == 0) break;
+                total += n;
+            }
+        }
+        catch (IOException) { }
+
+        return total;
     }
 
     public void Dispose() => _tcp.Dispose();

@@ -12,17 +12,24 @@ internal sealed class DogConnection(
     private const int StateReading = 1;
     private const int StateHandling = 2;
 
+    private static readonly TimeSpan LingerTimeout = TimeSpan.FromMilliseconds(500);
+
+    private static readonly byte[] TimeoutResponse =
+        "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"u8.ToArray();
+
     private static readonly PipeOptions PipeOpts = new(
         pool: MemoryPool<byte>.Shared,
         readerScheduler: PipeScheduler.Inline,
         writerScheduler: PipeScheduler.Inline,
-        pauseWriterThreshold: HttpParser.MaxHeadSize + HttpParser.MaxBodySize + 4096,
+        pauseWriterThreshold: HttpParser.MaxRequestWireSize + 64 * 1024,
         resumeWriterThreshold: 64 * 1024,
         minimumSegmentSize: 4096,
         useSynchronizationContext: false);
 
     private long _deadline;
+    private long _sendDeadline;
     private int _state = StateIdle;
+    private int _timedOut;
 
     public async Task RunAsync()
     {
@@ -43,9 +50,12 @@ internal sealed class DogConnection(
         finally
         {
             manager.Remove(this);
+
             try { socket.Shutdown(SocketShutdown.Send); } catch { }
-            socket.Dispose();
             try { await pipe.Reader.CompleteAsync(); } catch { }
+            try { await filling.WaitAsync(LingerTimeout); } catch { }
+
+            socket.Dispose();
             try { await filling; } catch { }
 
             request.Dispose();
@@ -56,9 +66,27 @@ internal sealed class DogConnection(
 
     internal void CheckTimeout(long now)
     {
-        long deadline = Volatile.Read(ref _deadline);
-        if (deadline != 0 && now >= deadline && Volatile.Read(ref _state) != StateHandling)
+        long sendDeadline = Volatile.Read(ref _sendDeadline);
+        if (sendDeadline != 0 && now >= sendDeadline)
+        {
             Abort();
+            return;
+        }
+
+        long deadline = Volatile.Read(ref _deadline);
+        if (deadline == 0 || now < deadline) return;
+
+        int state = Volatile.Read(ref _state);
+        if (state == StateHandling) return;
+
+        if (state == StateReading)
+        {
+            if (Interlocked.Exchange(ref _timedOut, 1) == 0)
+                _ = SendTimeoutAndAbortAsync();
+            return;
+        }
+
+        Abort();
     }
 
     internal void CloseIfIdle()
@@ -70,6 +98,18 @@ internal sealed class DogConnection(
     internal void Abort()
     {
         try { socket.Dispose(); } catch { }
+    }
+
+    private async Task SendTimeoutAndAbortAsync()
+    {
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+            await socket.SendAsync(TimeoutResponse.AsMemory(), SocketFlags.None, cts.Token);
+        }
+        catch { }
+
+        Abort();
     }
 
     private void EnterIdle(TimeSpan timeout)
@@ -98,25 +138,53 @@ internal sealed class DogConnection(
         Volatile.Write(ref _deadline, deadline);
     }
 
+    private void ArmSendDeadline()
+    {
+        if (options.SendTimeout == Timeout.InfiniteTimeSpan) return;
+
+        Volatile.Write(ref _sendDeadline,
+            Environment.TickCount64 + Math.Max(1, (long)options.SendTimeout.TotalMilliseconds));
+    }
+
     private async Task FillPipeAsync(PipeWriter writer)
     {
+        byte[]? discard = null;
+        bool writerCompleted = false;
+        Exception? error = null;
+
         try
         {
             while (true)
             {
+                if (writerCompleted)
+                {
+                    discard ??= ArrayPool<byte>.Shared.Rent(4096);
+                    int drained = await socket.ReceiveAsync(discard.AsMemory(), SocketFlags.None);
+                    if (drained == 0) break;
+                    continue;
+                }
+
                 Memory<byte> memory = writer.GetMemory(4096);
                 int read = await socket.ReceiveAsync(memory, SocketFlags.None);
                 if (read == 0) break;
 
                 writer.Advance(read);
                 FlushResult flush = await writer.FlushAsync();
-                if (flush.IsCompleted) break;
+                if (flush.IsCompleted)
+                {
+                    await writer.CompleteAsync();
+                    writerCompleted = true;
+                }
             }
-            await writer.CompleteAsync();
         }
         catch (Exception ex)
         {
-            await writer.CompleteAsync(ex);
+            error = ex;
+        }
+        finally
+        {
+            if (discard is not null) ArrayPool<byte>.Shared.Return(discard);
+            if (!writerCompleted) await writer.CompleteAsync(error);
         }
     }
 
@@ -124,6 +192,7 @@ internal sealed class DogConnection(
     {
         EnterIdle(options.RequestTimeout);
         bool idle = true;
+        bool continueSent = false;
 
         while (true)
         {
@@ -148,14 +217,22 @@ internal sealed class DogConnection(
 
                     if (status == ParseStatus.NeedMore) break;
 
+                    if (status == ParseStatus.NeedMoreBody)
+                    {
+                        if (request.ExpectContinue && !continueSent)
+                        {
+                            output.Write("HTTP/1.1 100 Continue\r\n\r\n"u8);
+                            continueSent = true;
+                        }
+                        break;
+                    }
+
                     EnterHandling();
                     handled = true;
 
-                    if (status == ParseStatus.Bad)
+                    if (status != ParseStatus.Ok)
                     {
-                        response.Reset();
-                        response.StatusCode = 400;
-                        response.Write("Bad Request"u8);
+                        FillParseError(response, status);
                         HttpWriter.Write(output, response, keepAlive: false, isHead: false);
 
                         consumed = examined;
@@ -163,6 +240,7 @@ internal sealed class DogConnection(
                         break;
                     }
 
+                    continueSent = false;
                     response.Reset();
                     try
                     {
@@ -216,14 +294,56 @@ internal sealed class DogConnection(
         }
     }
 
+    private static void FillParseError(DogResponse response, ParseStatus status)
+    {
+        response.Reset();
+
+        switch (status)
+        {
+            case ParseStatus.PayloadTooLarge:
+                response.StatusCode = 413;
+                response.Write("Payload Too Large"u8);
+                break;
+            case ParseStatus.HeadersTooLarge:
+                response.StatusCode = 431;
+                response.Write("Request Header Fields Too Large"u8);
+                break;
+            case ParseStatus.ExpectationFailed:
+                response.StatusCode = 417;
+                response.Write("Expectation Failed"u8);
+                break;
+            case ParseStatus.NotImplemented:
+                response.StatusCode = 501;
+                response.Write("Not Implemented"u8);
+                break;
+            case ParseStatus.VersionNotSupported:
+                response.StatusCode = 505;
+                response.Write("HTTP Version Not Supported"u8);
+                break;
+            default:
+                response.StatusCode = 400;
+                response.Write("Bad Request"u8);
+                break;
+        }
+    }
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     private async ValueTask SendAllAsync(ByteBuffer output)
     {
         ReadOnlyMemory<byte> data = output.WrittenMemory;
-        while (!data.IsEmpty)
+
+        try
         {
-            int sent = await socket.SendAsync(data, SocketFlags.None);
-            data = data[sent..];
+            while (!data.IsEmpty)
+            {
+                ArmSendDeadline();
+                int sent = await socket.SendAsync(data, SocketFlags.None);
+                data = data[sent..];
+            }
+        }
+        finally
+        {
+            Volatile.Write(ref _sendDeadline, 0);
         }
     }
 }

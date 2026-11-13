@@ -63,10 +63,14 @@ internal static class HttpWriter
         403 => "HTTP/1.1 403 Forbidden\r\n"u8,
         404 => "HTTP/1.1 404 Not Found\r\n"u8,
         405 => "HTTP/1.1 405 Method Not Allowed\r\n"u8,
+        408 => "HTTP/1.1 408 Request Timeout\r\n"u8,
         413 => "HTTP/1.1 413 Content Too Large\r\n"u8,
+        417 => "HTTP/1.1 417 Expectation Failed\r\n"u8,
+        431 => "HTTP/1.1 431 Request Header Fields Too Large\r\n"u8,
         500 => "HTTP/1.1 500 Internal Server Error\r\n"u8,
         501 => "HTTP/1.1 501 Not Implemented\r\n"u8,
         503 => "HTTP/1.1 503 Service Unavailable\r\n"u8,
+        505 => "HTTP/1.1 505 HTTP Version Not Supported\r\n"u8,
         _ => default
     };
 }

@@ -9,6 +9,7 @@ public class TimeoutTests
     {
         RequestTimeout = TimeSpan.FromMilliseconds(300),
         KeepAliveTimeout = TimeSpan.FromMilliseconds(300),
+        SendTimeout = TimeSpan.FromMilliseconds(300),
         HeartbeatInterval = TimeSpan.FromMilliseconds(50),
     };
 
@@ -19,7 +20,7 @@ public class TimeoutTests
     }
 
     [Fact]
-    public async Task Idle_keep_alive_connection_is_closed()
+    public async Task Idle_keep_alive_connection_is_closed_silently()
     {
         await using var server = new TestServer(Hello, Fast);
         using var client = await RawClient.ConnectAsync(server.Port);
@@ -33,7 +34,7 @@ public class TimeoutTests
     }
 
     [Fact]
-    public async Task Connection_that_never_sends_anything_is_closed()
+    public async Task Connection_that_never_sends_anything_is_closed_silently()
     {
         await using var server = new TestServer(Hello, Fast);
         using var client = await RawClient.ConnectAsync(server.Port);
@@ -42,25 +43,27 @@ public class TimeoutTests
     }
 
     [Fact]
-    public async Task Incomplete_head_is_cut_off()
+    public async Task Incomplete_head_gets_408_and_is_closed()
     {
         await using var server = new TestServer(Hello, Fast);
         using var client = await RawClient.ConnectAsync(server.Port);
 
         await client.SendAsync("GET / HTTP/1.1\r\nHost: t\r\n");
 
-        Assert.True(await client.WaitForCloseAsync());
+        string text = await client.ReadUntilCloseAsync();
+        Assert.StartsWith("HTTP/1.1 408 Request Timeout", text, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Incomplete_body_is_cut_off()
+    public async Task Incomplete_body_gets_408_and_is_closed()
     {
         await using var server = new TestServer(Hello, Fast);
         using var client = await RawClient.ConnectAsync(server.Port);
 
         await client.SendAsync("POST / HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc");
 
-        Assert.True(await client.WaitForCloseAsync());
+        string text = await client.ReadUntilCloseAsync();
+        Assert.StartsWith("HTTP/1.1 408 Request Timeout", text, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -71,7 +74,7 @@ public class TimeoutTests
 
         await client.SendAsync("GET / HTTP/1.1\r\n");
 
-        bool writeFailed = false;
+        bool dropped = false;
         for (int i = 0; i < 20; i++)
         {
             await Task.Delay(100);
@@ -81,12 +84,13 @@ public class TimeoutTests
             }
             catch (IOException)
             {
-                writeFailed = true;
+                dropped = true;
                 break;
             }
         }
 
-        Assert.True(writeFailed || await client.WaitForCloseAsync());
+        string rest = dropped ? "" : await client.ReadUntilCloseAsync();
+        Assert.True(rest.Length == 0 || rest.StartsWith("HTTP/1.1 408", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -125,6 +129,7 @@ public class TimeoutTests
         {
             RequestTimeout = Timeout.InfiniteTimeSpan,
             KeepAliveTimeout = Timeout.InfiniteTimeSpan,
+            SendTimeout = Timeout.InfiniteTimeSpan,
             HeartbeatInterval = TimeSpan.FromMilliseconds(50),
         };
         await using var server = new TestServer(Hello, options);
@@ -134,5 +139,24 @@ public class TimeoutTests
 
         await client.SendAsync("GET / HTTP/1.1\r\nHost: t\r\n\r\n");
         Assert.Equal("hi", (await client.ReadReplyAsync()).Body);
+    }
+
+    [Fact]
+    public async Task Client_that_does_not_read_the_response_is_dropped()
+    {
+        byte[] big = new byte[32 * 1024 * 1024];
+        await using var server = new TestServer((req, res) =>
+        {
+            res.ContentType = ContentTypes.Octet;
+            res.Write(big);
+            return ValueTask.CompletedTask;
+        }, Fast);
+        using var client = await RawClient.ConnectAsync(server.Port, receiveBufferSize: 4096);
+
+        await client.SendAsync("GET / HTTP/1.1\r\nHost: t\r\n\r\n");
+
+        long received = await client.CountBytesUntilCloseAsync(TimeSpan.FromMilliseconds(1500));
+
+        Assert.True(received < big.Length, $"client received the whole {received} bytes");
     }
 }

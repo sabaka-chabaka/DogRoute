@@ -13,7 +13,7 @@ Console.CancelKeyPress += (_, e) =>
 
 var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req, res) =>
 {
-    ReadOnlySpan<byte> path = req.Path;
+    ReadOnlySpan<byte> path = req.DecodedPath;
 
     if (path.SequenceEqual("/echo"u8))
     {
@@ -34,6 +34,10 @@ var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req,
         res.Headers.Add("Set-Cookie", "a=1; Path=/");
         res.Headers.Add("Set-Cookie", "b=2; Path=/");
         res.Write("headers"u8);
+    }
+    else if (path.StartsWith("/path/"u8))
+    {
+        res.Write(path);
     }
     else if (path.SequenceEqual("/slow"u8))
     {
