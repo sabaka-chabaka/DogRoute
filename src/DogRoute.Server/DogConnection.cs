@@ -106,6 +106,9 @@ internal sealed class DogConnection(
         {
             using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
             await socket.SendAsync(TimeoutResponse.AsMemory(), SocketFlags.None, cts.Token);
+
+            socket.Shutdown(SocketShutdown.Send);
+            await Task.Delay(LingerTimeout);
         }
         catch { }
 
