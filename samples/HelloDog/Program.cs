@@ -1,4 +1,5 @@
 ﻿using System.Net;
+using DogRoute.Routing;
 using DogRoute.Server;
 
 int port = args.Length > 0 && int.TryParse(args[0], out int p) ? p : 8080;
@@ -11,52 +12,67 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-var server = new DogServer(new IPEndPoint(IPAddress.IPv6Any, port), static (req, res) =>
+var app = new DogApp();
+
+app.Map(DogMethod.Get, "/", static ctx =>
 {
-    ReadOnlySpan<byte> path = req.DecodedPath;
-
-    if (path.SequenceEqual("/echo"u8))
-    {
-        res.ContentType = ContentTypes.Octet;
-        res.Write(req.Body);
-    }
-    else if (path.SequenceEqual("/ping"u8))
-    {
-        res.Write("pong"u8);
-    }
-    else if (path.SequenceEqual("/redirect"u8))
-    {
-        res.Redirect("/"u8);
-    }
-    else if (path.SequenceEqual("/headers"u8))
-    {
-        res.Headers.Add("X-Dog"u8, "woof"u8);
-        res.Headers.Add("Set-Cookie", "a=1; Path=/");
-        res.Headers.Add("Set-Cookie", "b=2; Path=/");
-        res.Write("headers"u8);
-    }
-    else if (path.StartsWith("/path/"u8))
-    {
-        res.Write(path);
-    }
-    else if (path.SequenceEqual("/slow"u8))
-    {
-        return SlowAsync(res);
-    }
-    else
-    {
-        res.Write("Hello, World!"u8);
-    }
-
+    ctx.Response.Write("Hello, World!"u8);
     return ValueTask.CompletedTask;
 });
 
-Console.WriteLine($"DogRoute listening on http://localhost:{port}  (Ctrl+C to stop)");
-await server.RunAsync(cts.Token);
-Console.WriteLine("Stopped.");
+app.Map(DogMethod.Get, "/ping", static ctx =>
+{
+    ctx.Response.Write("pong"u8);
+    return ValueTask.CompletedTask;
+});
 
-static async ValueTask SlowAsync(DogResponse res)
+app.Map(DogMethod.Get, "/redirect", static ctx =>
+{
+    ctx.Response.Redirect("/"u8);
+    return ValueTask.CompletedTask;
+});
+
+app.Map(DogMethod.Get, "/files/{*path}", static ctx =>
+{
+    ctx.Response.Write("file: "u8);
+    ctx.Response.Write(ctx.Route["path"u8]);
+    return ValueTask.CompletedTask;
+});
+
+app.Map(DogMethod.Get, "/slow", static async ctx =>
 {
     await Task.Delay(3000);
-    res.Write("slow done"u8);
+    ctx.Response.Write("slow done"u8);
+});
+
+RouteGroupDemo(app);
+
+Console.WriteLine($"DogRoute listening on http://localhost:{port}  (Ctrl+C to stop)");
+await app.RunAsync(new IPEndPoint(IPAddress.IPv6Any, port), stopToken: cts.Token);
+Console.WriteLine("Stopped.");
+
+static void RouteGroupDemo(DogApp app)
+{
+    DogRouteGroup api = app.MapGroup("/api");
+
+    api.Map(DogMethod.Get, "/dogs/{id:int}", static ctx =>
+    {
+        ctx.Response.Write("dog #"u8);
+        ctx.Response.Write(ctx.Route["id"u8]);
+        return ValueTask.CompletedTask;
+    });
+
+    api.Map(DogMethod.Get, "/dogs/{name}", static ctx =>
+    {
+        ctx.Response.Write("dog named "u8);
+        ctx.Response.Write(ctx.Route["name"u8]);
+        return ValueTask.CompletedTask;
+    });
+
+    api.Map(DogMethod.Post, "/echo", static ctx =>
+    {
+        ctx.Response.ContentType = ContentTypes.Octet;
+        ctx.Response.Write(ctx.Request.Body);
+        return ValueTask.CompletedTask;
+    });
 }

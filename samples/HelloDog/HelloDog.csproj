@@ -4,6 +4,6 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\src\DogRoute.Server\DogRoute.Server.csproj" />
+    <ProjectReference Include="..\..\src\DogRoute.Routing\DogRoute.Routing.csproj" />
   </ItemGroup>
 </Project>

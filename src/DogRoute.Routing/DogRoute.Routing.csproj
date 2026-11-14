@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>DogRoute.Routing</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="DogRoute.Routing.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\DogRoute.Server\DogRoute.Server.csproj" />
+  </ItemGroup>
+</Project>
+

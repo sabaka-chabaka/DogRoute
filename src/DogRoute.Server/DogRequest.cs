@@ -37,6 +37,11 @@ public sealed class DogRequest : IDisposable
     public ReadOnlySpan<byte> DecodedPath =>
         _pathDecoded ? _pathScratch.AsSpan(0, _decodedPathLength) : Path;
 
+    public ReadOnlyMemory<byte> DecodedPathMemory =>
+        _pathDecoded
+            ? _pathScratch.AsMemory(0, _decodedPathLength)
+            : _head.Slice(_targetStart, _pathLength);
+
     public ReadOnlySpan<byte> Query => _pathLength >= _targetLength
         ? default
         : _head.Span.Slice(_targetStart + _pathLength + 1, _targetLength - _pathLength - 1);
